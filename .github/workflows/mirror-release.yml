@@ -1,0 +1,58 @@
+name: Mirror upstream release
+
+# 把上游 release 的全部资产备份到本仓库的 release。
+# 全程在 GitHub Runner 上下载+上传，不消耗本地流量。
+# 用法：Actions → Mirror upstream release → Run workflow，输入版本号（如 2.5.0）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "上游版本号（如 2.5.0）"
+        required: true
+        type: string
+      upstream:
+        description: "上游仓库"
+        required: true
+        default: "getopenscreen/openscreen"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载上游全部资产
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          names=$(gh release view "v${{ inputs.version }}" --repo "${{ inputs.upstream }}" \
+            --json assets --jq '[.assets[].name] | join("\n")')
+          test -n "$names"
+          echo "将镜像以下文件："; echo "$names"
+          mkdir assets && cd assets
+          echo "$names" | while read -r f; do
+            gh release download "v${{ inputs.version }}" --repo "${{ inputs.upstream }}" --pattern "$f" --dir .
+          done
+          ls -la
+          echo "$names" | while read -r f; do test -f "$f" || { echo "缺少文件: $f"; exit 1; }; done
+
+      - name: 创建（或复用）release 并上传资产
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v${{ inputs.version }}"
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+              --title "${{ github.event.repository.name }} ${{ inputs.version }} (mirror of ${{ inputs.upstream }})" \
+              --notes "全量备份自上游 ${{ inputs.upstream }} $tag（含全部平台资产与签名）。原始发布说明见上游仓库。"
+          else
+            echo "release $tag 已存在，仅更新资产"
+          fi
+          cd assets
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber ./*
+          echo "完成：$GITHUB_REPOSITORY/releases/tag/$tag"
